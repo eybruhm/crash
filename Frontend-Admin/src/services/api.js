@@ -1,0 +1,127 @@
+/**
+ * Admin API Service
+ *
+ * Purpose:
+ * - Central place for Admin frontend → Backend API calls.
+ * - Keeps pages/components free from hardcoded URLs.
+ *
+ * Notes:
+ * - All requests go through `services/apiClient.js` which attaches JWT tokens and handles refresh.
+ * - Some list endpoints may return `{ results: [...] }` (DRF pagination) or plain arrays.
+ */
+import apiClient from './apiClient'
+
+function unwrapListResponse(data) {
+  // DRF pagination usually returns: { count, next, previous, results: [...] }
+  return data?.results || data
+}
+
+export const api = {
+  /**
+   * Admin login (email + password).
+   * Backend returns: { role, user, access, refresh, message }
+   */
+  async loginAdmin({ email, password }) {
+    const res = await apiClient.post('/auth/login/', { email, password })
+    return res.data
+  },
+
+  /**
+   * Police office list (Admin).
+   * Serializer: office_id, office_name, email, head_officer, contact_number, latitude, longitude
+   */
+  async listPolice(params = {}) {
+    const res = await apiClient.get('/admin/police-offices/', { params })
+    const data = unwrapListResponse(res.data)
+    return Array.isArray(data) ? data : []
+  },
+
+  /**
+   * Create police office (Admin).
+   * Backend requires: created_by (admin_id) and password (plain) for hashing.
+   */
+  async addPolice(payload) {
+    const res = await apiClient.post('/admin/police-offices/', payload)
+    return res.data
+  },
+
+  /**
+   * Update police office (Admin).
+   * Uses PATCH so you can send only fields that changed.
+   * Password is optional for updates; send it only if you want to change it.
+   */
+  async updatePolice(officeId, payload) {
+    const res = await apiClient.patch(`/admin/police-offices/${officeId}/`, payload)
+    return res.data
+  },
+
+  async removePolice(officeId) {
+    const res = await apiClient.delete(`/admin/police-offices/${officeId}/`)
+    return res.data
+  },
+
+  /**
+   * Admin dashboard map data (offices + checkpoints + reports).
+   * Backend: GET /admin/map/data/
+   */
+  async getAdminMapData(params = {}) {
+    const res = await apiClient.get('/admin/map/data/', { params })
+    return res.data
+  },
+
+  /**
+   * Public reverse geocode helper.
+   * Backend: GET /geocode/reverse/?lat=X&lng=Y
+   */
+  async reverseGeocode(lat, lng) {
+    const res = await apiClient.get('/geocode/reverse/', { params: { lat, lng } })
+    return res.data
+  },
+
+  /**
+   * Admin manual report creation (Admin1 tool).
+   * Backend: POST /admin/reports/manual/
+   */
+  async createManualReport(payload) {
+    const res = await apiClient.post('/admin/reports/manual/', payload)
+    return res.data
+  },
+
+  /**
+   * Admin user lookup helper (for manual report insertion).
+   * Backend: GET /admin/users/search/?q=...
+   */
+  async searchUsers(q) {
+    const res = await apiClient.get('/admin/users/search/', { params: { q } })
+    return res.data
+  },
+
+  /**
+   * Get current admin profile.
+   * Backend: GET /admin/profile/
+   */
+  async getAdminProfile() {
+    const res = await apiClient.get('/admin/profile/')
+    return res.data
+  },
+
+  /**
+   * Update admin profile (username, email, contact).
+   * Backend: PATCH /admin/profile/
+   */
+  async updateAdminProfile(payload) {
+    const res = await apiClient.patch('/admin/profile/', payload)
+    return res.data
+  },
+
+  /**
+   * Change admin password.
+   * Backend: PATCH /admin/profile/password/
+   */
+  async changePassword(newPassword) {
+    const res = await apiClient.patch('/admin/profile/password/', { new_password: newPassword })
+    return res.data
+  },
+}
+
+

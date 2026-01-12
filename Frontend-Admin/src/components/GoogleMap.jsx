@@ -1,0 +1,518 @@
+import { useEffect, useRef, useState } from 'react'
+import { loadGoogleMapsApi } from '../utils/googleMaps'
+import { GOOGLE_API_KEY } from '../constants'
+// Marker image assets (easy to swap later).
+// Replace these files if you want different marker designs.
+import policeOfficeMarker from '../assets/markers/police-office.png'
+import policeCheckpointMarker from '../assets/markers/police-checkpoint.png'
+
+/**
+ * GoogleMap Component
+ *
+ * Purpose:
+ * - Render a Google Maps instance for the Admin dashboard.
+ * - Display markers for police offices and checkpoints.
+ *
+ * Used by:
+ * - pages/Dashboard.jsx (map visualization + right-click reverse geocode helper)
+ *
+ * @param {Object} props
+ * @param {Array} props.markers - Array of marker objects with {id, lat, lng, officeName, ...}
+ * @param {Function} props.onMarkerClick - Callback when a marker is clicked
+ * @param {Object} props.selectedMarker - Currently selected marker object
+ * @param {Function} props.onMapRightClick - Callback for dashboard right-click helper
+ * @param {Object} props.defaultCenter - Default center coordinates {lat, lng}
+ * @param {number} props.defaultZoom - Default zoom level
+ *
+ * Notes:
+ * - This component intentionally does not use InfoWindows; the Dashboard shows details in its own UI.
+ * - Marker objects come from multiple backend payload shapes, so helper functions normalize ids/coords.
+ */
+export default function GoogleMap({ 
+  markers = [], 
+  onMarkerClick,
+  selectedMarker,
+  onMapRightClick,
+  defaultCenter = { lat: 14.5995, lng: 120.9842 }, // Default to Manila, Philippines
+  defaultZoom = 10 
+}) {
+  const mapRef = useRef(null)
+  const [map, setMap] = useState(null)
+  const [googleMaps, setGoogleMaps] = useState(null)
+  const [mapMarkers, setMapMarkers] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  // Map viewport handling:
+  // - `hasInitialBoundsSet`: only auto-fit once on first successful marker set
+  // - `userHasInteracted`: if the user drags/zooms, do not override their viewport
+  // - `lastMarkerIds`: detect if markers truly changed (not just a new array reference)
+  const hasInitialBoundsSet = useRef(false)
+  const userHasInteracted = useRef(false)
+  const lastMarkerIds = useRef(new Set())
+
+  // Helpers: normalize marker shape because offices and checkpoints use different field names.
+  function getMarkerId(m) {
+    return m?.office_id || m?.checkpoint_id || m?.id || null
+  }
+
+  function getMarkerLatLng(m) {
+    const latRaw = m?.latitude ?? m?.location?.lat ?? m?.lat
+    const lngRaw = m?.longitude ?? m?.location?.lng ?? m?.lng
+    const lat = Number(latRaw)
+    const lng = Number(lngRaw)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+    return { lat, lng }
+  }
+
+  function getMarkerTitle(m) {
+    if (m?.checkpoint_name) return m.checkpoint_name
+    return m?.office_name || m?.officeName || 'Police Office'
+  }
+
+  function getMarkerType(m) {
+    return m?.type || (m?.checkpoint_id ? 'checkpoint' : 'office')
+  }
+
+  // Fail-fast: show a helpful error if loading takes too long.
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (isLoading && !map && !error) {
+        console.error('[GoogleMap] Loading timeout - showing error')
+        setError('Google Maps is taking too long to load. Please check: 1) Your internet connection, 2) API key is valid, 3) Maps JavaScript API is enabled in Google Cloud Console, 4) No domain restrictions blocking localhost. Check browser console (F12) for details.')
+        setIsLoading(false)
+      }
+    }, 10000) // 10 second timeout
+
+    return () => clearTimeout(timeout)
+  }, [isLoading, map, error])
+
+  // Step 1: Load Google Maps API and initialize the map instance.
+  // We guard heavily against ref timing issues and script-load edge cases.
+  useEffect(() => {
+    let isMounted = true
+    let initTimeout = null
+    let retryCount = 0
+    const maxRetries = 10
+
+    if (map) {
+      setIsLoading(false)
+      return
+    }
+
+    const loadMap = () => {
+      loadGoogleMapsApi(GOOGLE_API_KEY, { libraries: ['places', 'geometry'] })
+        .then((maps) => {
+          if (!isMounted || map) {
+            return
+          }
+          
+          if (!maps) {
+            setError('Failed to load Google Maps API - maps object is null. Check console for details.')
+            setIsLoading(false)
+            return
+          }
+
+          setGoogleMaps(maps)
+
+          // Wait for mapRef to be ready (React may render the div after this promise resolves).
+          const tryInit = () => {
+            if (!isMounted || map) return
+
+            if (!mapRef.current) {
+              retryCount++
+              if (retryCount < maxRetries) {
+                initTimeout = setTimeout(tryInit, 100)
+              } else {
+                console.error('[GoogleMap] Map ref never became available')
+                setError('Map container not found. Please refresh the page.')
+                setIsLoading(false)
+              }
+              return
+            }
+
+            try {
+              // Create the map with a dark theme and minimal controls.
+              const mapInstance = new maps.Map(mapRef.current, {
+                center: defaultCenter,
+                zoom: defaultZoom,
+                styles: [
+                  {
+                    featureType: 'all',
+                    elementType: 'geometry',
+                    stylers: [{ color: '#242f3e' }]
+                  },
+                  {
+                    featureType: 'all',
+                    elementType: 'labels.text.stroke',
+                    stylers: [{ visibility: 'on' }, { color: '#242f3e' }, { weight: 2 }]
+                  },
+                  {
+                    featureType: 'all',
+                    elementType: 'labels.text.fill',
+                    stylers: [{ visibility: 'on' }, { color: '#746855' }]
+                  },
+                  {
+                    featureType: 'water',
+                    elementType: 'geometry',
+                    stylers: [{ color: '#17263c' }]
+                  },
+                  {
+                    featureType: 'road',
+                    elementType: 'geometry',
+                    stylers: [{ color: '#38414e' }]
+                  },
+                  {
+                    featureType: 'poi',
+                    elementType: 'geometry',
+                    stylers: [{ color: '#1f2937' }]
+                  },
+                  // Hide Google POI icons/markers so OUR markers are clearly visible,
+                  // but keep helpful text labels like street/building names.
+                  {
+                    featureType: 'poi',
+                    elementType: 'labels.icon',
+                    stylers: [{ visibility: 'off' }]
+                  },
+                  {
+                    featureType: 'transit',
+                    elementType: 'labels.icon',
+                    stylers: [{ visibility: 'off' }]
+                  }
+                ],
+                disableDefaultUI: false,
+                zoomControl: true,
+                mapTypeControl: false,
+                scaleControl: true,
+                streetViewControl: false,
+                rotateControl: false,
+                fullscreenControl: true
+              })
+
+              setMap(mapInstance)
+              setIsLoading(false)
+            } catch (err) {
+              console.error('[GoogleMap] Error initializing map:', err)
+              setError(`Error initializing map: ${err.message}. Check browser console for details.`)
+              setIsLoading(false)
+            }
+          }
+
+          tryInit()
+        })
+        .catch((err) => {
+          if (!isMounted) return
+          console.error('[GoogleMap] Error loading Google Maps:', err)
+          console.error('[GoogleMap] Full error:', err)
+          setError(`Failed to load Google Maps: ${err.message}. Check browser console (F12) for details.`)
+          setIsLoading(false)
+        })
+    }
+
+    loadMap()
+
+    return () => {
+      isMounted = false
+      if (initTimeout) clearTimeout(initTimeout)
+    }
+  }, []) // Only run once on mount
+
+  // Step 2: Track user interaction (drag/zoom) so we don't fight their viewport.
+  useEffect(() => {
+    if (!map || !googleMaps) return
+
+    const handleDragStart = () => {
+      userHasInteracted.current = true
+    }
+
+    const handleZoomChanged = () => {
+      if (map.getZoom() !== defaultZoom) {
+        userHasInteracted.current = true
+      }
+    }
+
+    const dragListener = map.addListener('dragstart', handleDragStart)
+    const zoomListener = map.addListener('zoom_changed', handleZoomChanged)
+
+    return () => {
+      if (dragListener) googleMaps.event.removeListener(dragListener)
+      if (zoomListener) googleMaps.event.removeListener(zoomListener)
+    }
+  }, [map, googleMaps, defaultZoom])
+
+  // Step 3: Right-click handler (Admin dashboard helper).
+  // Dashboard uses this to reverse-geocode an arbitrary location.
+  useEffect(() => {
+    if (!map || !googleMaps || !onMapRightClick) return
+
+    const listener = map.addListener('rightclick', (e) => {
+      try {
+        const lat = e?.latLng?.lat?.()
+        const lng = e?.latLng?.lng?.()
+        if (typeof lat === 'number' && typeof lng === 'number') {
+          onMapRightClick(lat, lng)
+        }
+      } catch {
+        // ignore
+      }
+    })
+
+    return () => {
+      if (listener) googleMaps.event.removeListener(listener)
+    }
+  }, [map, googleMaps, onMapRightClick])
+
+  // Step 4: Auto-fit the map to marker bounds.
+  // Only runs on initial load OR when new markers appear (and user hasn't moved the map).
+  useEffect(() => {
+    if (!map || !googleMaps || markers.length === 0) return
+
+    // Get current marker IDs
+    const currentMarkerIds = new Set(markers.map(getMarkerId).filter(Boolean))
+    
+    // Check if there are actually new markers (not just array reference change)
+    const hasNewMarkers = Array.from(currentMarkerIds).some(id => !lastMarkerIds.current.has(id))
+    const markerCountChanged = currentMarkerIds.size !== lastMarkerIds.current.size
+
+    // Only adjust bounds if:
+    // 1) Initial load (bounds haven't been set)
+    // 2) New markers were actually added
+    // 3) User hasn't manually moved the map
+    if (!hasInitialBoundsSet.current || (hasNewMarkers && !userHasInteracted.current)) {
+      const bounds = new googleMaps.LatLngBounds()
+      let hasValidLocations = false
+
+      markers.forEach((marker) => {
+        const pos = getMarkerLatLng(marker)
+        const lat = pos?.lat
+        const lng = pos?.lng
+        
+        if (lat && lng && lat !== 0 && lng !== 0) {
+          bounds.extend(new googleMaps.LatLng(lat, lng))
+          hasValidLocations = true
+        }
+      })
+
+      if (hasValidLocations) {
+        if (markers.length === 1) {
+          const singleMarker = markers[0]
+          const pos = getMarkerLatLng(singleMarker)
+          const lat = pos?.lat
+          const lng = pos?.lng
+          if (lat && lng && lat !== 0 && lng !== 0) {
+            map.setCenter(new googleMaps.LatLng(lat, lng))
+            map.setZoom(15)
+            hasInitialBoundsSet.current = true
+          }
+        } else {
+          map.fitBounds(bounds, { padding: 50 })
+          hasInitialBoundsSet.current = true
+        }
+      }
+    }
+
+    // Update last known marker IDs so we can detect real changes next render.
+    lastMarkerIds.current = currentMarkerIds
+  }, [map, googleMaps, markers])
+
+  // Step 5: Create/update markers on the map.
+  // Recreates marker instances whenever the marker dataset changes.
+  useEffect(() => {
+    if (!map || !googleMaps) {
+      return
+    }
+    
+    // Clear existing markers from the map to avoid duplicates.
+    mapMarkers.forEach((marker) => marker.setMap(null))
+    const newMarkers = []
+    let validMarkers = 0
+    let skippedMarkers = 0
+
+    markers.forEach((markerData, index) => {
+      const pos = getMarkerLatLng(markerData)
+      const lat = pos?.lat
+      const lng = pos?.lng
+
+      // Guard: skip invalid coordinates so Google Maps doesn't throw.
+      if (!lat || !lng || lat === 0 || lng === 0 || 
+          lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        console.warn(`[GoogleMap] Skipping marker ${index + 1} (${getMarkerTitle(markerData) || 'Unknown'}): Invalid coordinates`, { lat, lng })
+        skippedMarkers++
+        return
+      }
+
+      try {
+        const position = new googleMaps.LatLng(lat, lng)
+        const isSelected = getMarkerId(selectedMarker) === getMarkerId(markerData)
+        const markerType = getMarkerType(markerData)
+
+        // Use marker assets from src/assets/markers
+        // Adjust sizes here if you want bigger/smaller markers.
+        const normalOfficeSize = 38
+        const largeOfficeSize = 46
+        const normalCheckpointSize = 28
+        const largeCheckpointSize = 34
+
+        const iconSize =
+          markerType === 'checkpoint'
+            ? (isSelected ? largeCheckpointSize : normalCheckpointSize)
+            : (isSelected ? largeOfficeSize : normalOfficeSize)
+        
+        // Anchor point at bottom center (pins)
+        const anchorX = iconSize / 2
+        const anchorY = iconSize
+        
+        // Create marker; selected marker gets bounce animation + higher z-index.
+        const marker = new googleMaps.Marker({
+          position,
+          map,
+          title: getMarkerTitle(markerData),
+          icon:
+            markerType === 'checkpoint'
+              ? {
+                  // Checkpoint marker image (src/assets/markers/police-checkpoint.png)
+                  url: policeCheckpointMarker,
+                  scaledSize: new googleMaps.Size(iconSize, iconSize),
+                  anchor: new googleMaps.Point(anchorX, anchorY),
+                }
+              : {
+                  // Police office marker image (src/assets/markers/police-office.png)
+                  url: policeOfficeMarker,
+                  scaledSize: new googleMaps.Size(iconSize, iconSize),
+                  anchor: new googleMaps.Point(anchorX, anchorY),
+          },
+          label: {
+            text: '',
+            color: '#ffffff',
+            fontSize: '0px',
+          },
+          animation: isSelected ? googleMaps.Animation.BOUNCE : null,
+          zIndex: isSelected ? 1000 : 1
+        })
+
+        // Add click listener (Dashboard handles the details UI).
+        marker.addListener('click', () => {
+          if (onMarkerClick) {
+            onMarkerClick(markerData)
+          }
+        })
+        marker.markerData = markerData
+        newMarkers.push(marker)
+        validMarkers++
+      } catch (err) {
+        console.error(`[GoogleMap] Error creating marker for ${getMarkerTitle(markerData) || 'Unknown'}:`, err)
+        skippedMarkers++
+      }
+    })
+
+    setMapMarkers(newMarkers)
+  }, [map, googleMaps, markers, onMarkerClick, selectedMarker])
+
+  // Step 6: Update marker appearance when selection changes (without recreating markers).
+  // This keeps the UI responsive when only the selected pin changes.
+  useEffect(() => {
+    if (!googleMaps || mapMarkers.length === 0) return
+
+    // Use marker assets from src/assets/markers
+    const normalOfficeSize = 38
+    const largeOfficeSize = 46
+    const normalCheckpointSize = 28
+    const largeCheckpointSize = 34
+
+    mapMarkers.forEach((marker) => {
+      const markerData = marker.markerData
+      if (!markerData) return
+
+      const isSelected = getMarkerId(selectedMarker) === getMarkerId(markerData)
+      const markerType = getMarkerType(markerData)
+      const iconSize =
+        markerType === 'checkpoint'
+          ? (isSelected ? largeCheckpointSize : normalCheckpointSize)
+          : (isSelected ? largeOfficeSize : normalOfficeSize)
+      
+      // Anchor point at bottom center of the pin
+      const anchorX = iconSize / 2
+      const anchorY = iconSize
+
+      const newIcon =
+        markerType === 'checkpoint'
+          ? {
+              url: policeCheckpointMarker,
+              scaledSize: new googleMaps.Size(iconSize, iconSize),
+              anchor: new googleMaps.Point(anchorX, anchorY),
+            }
+          : {
+              url: policeOfficeMarker,
+              scaledSize: new googleMaps.Size(iconSize, iconSize),
+              anchor: new googleMaps.Point(anchorX, anchorY),
+      }
+
+      // Update icon
+      marker.setIcon(newIcon)
+
+      // Update label - no text needed, design speaks for itself
+      const newLabel = {
+        text: '',
+        color: '#ffffff',
+        fontSize: '0px',
+      }
+      marker.setLabel(newLabel)
+
+      // Update animation
+      if (isSelected) {
+        marker.setAnimation(googleMaps.Animation.BOUNCE)
+      } else {
+        marker.setAnimation(null)
+      }
+
+      // Update z-index
+      marker.setZIndex(isSelected ? 1000 : 1)
+    })
+  }, [selectedMarker, mapMarkers, googleMaps])
+
+  // NOTE: No Google InfoWindow. Dashboard shows details in its own panel/modal.
+
+  // Always render the map container so ref is available
+  // Show loading/error overlays on top if needed
+  return (
+    <div className="w-full h-full relative" style={{ minHeight: '600px' }}>
+      {/* Map container - always rendered so ref works */}
+      <div 
+        ref={mapRef} 
+        className="w-full h-full"
+        style={{ minHeight: '600px' }}
+      />
+      
+      {/* Loading overlay */}
+      {isLoading && !error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-800/80 backdrop-blur-sm z-10">
+          <div className="text-center text-white">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mx-auto mb-4"></div>
+            <p className="text-slate-400">Loading Google Maps...</p>
+          </div>
+        </div>
+      )}
+      
+      {/* Error overlay */}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90 backdrop-blur-sm z-10">
+          <div className="text-center text-white max-w-md px-4">
+            <p className="text-red-400 mb-2 text-lg">⚠️ {error}</p>
+            <p className="text-sm text-slate-400 mb-4">Please check your Google Maps API key and browser console (F12) for details</p>
+            <button
+              onClick={() => {
+                setError(null)
+                setIsLoading(true)
+                window.location.reload()
+              }}
+              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg text-white text-sm transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
