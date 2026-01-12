@@ -1,305 +1,210 @@
 # SYSTEM FEATURES (CRASH)
 
-This document is a detailed, code-aligned description of what CRASH currently supports.
+This document explains what CRASH can do, and why it matters.
+It is written so non-technical readers can understand the value, while still being detailed enough to impress technical reviewers.
 
-CRASH is composed of:
-- **Backend (Django REST)**: `Backend/`
+CRASH includes:
+- **Backend (Django REST API)**: `Backend/`
 - **Admin Web (React/Vite)**: `Frontend-Admin/`
 - **Police Web (React/Vite)**: `Frontend-Police-JS/`
-
-Scope note:
-- The backend includes a **Mobile/Citizen create-report API** for Postman/end-to-end testing (`POST /mobile/reports/`). A full mobile app UI is outside this repository.
+- **Citizen/Mobile concept**: not included as a UI in this repo, but supported by backend endpoints and database tables.
 
 ---
 
-## 1) Users, roles, and “who can do what”
+## 1) Security hierarchy (who is allowed to create accounts)
 
-CRASH recognizes three real-world actor types:
+CRASH is designed so that *not anyone can just become Admin or Police*. The system enforces an “authorized onboarding” chain.
 
-### Admin (IT / dispatch / management)
-- Uses **Admin Web** for:
-  - Registering and maintaining police station accounts
-  - Visual oversight (map of offices and checkpoints)
-  - Encoding **offline / 911 / SMS** reports into the system (manual insertion tool)
-  - Generating password hashes for controlled account provisioning (Admin-to-Admin workflow)
+### Admin2 (highest level)
+Admin2 (highest level) can register the Admin1 through Supabase and using `Backend/hashing.py` from the system project repository, so it means not anyone can just be admin, only authorized.
 
-### Police Office (a station account)
-- Uses **Police Web** for:
-  - Viewing reports (typically scoped to their station)
-  - Updating report status and adding remarks
-  - Viewing and managing checkpoints
-  - Viewing analytics and exporting reports (PDF)
-  - Viewing resolved cases archive and exporting case files (PDF)
+What this means in practice:
+- `hashing.py` generates a **Django PBKDF2 password hash** using `make_password()`.
+- Admin2 inserts the hashed password directly into the database (Supabase). There is no public “create super-admin” endpoint.
 
-### Citizen / User
-- Exists in the database as `tbl_users`.
-- Can create reports through the backend’s **mobile endpoint** (currently for testing and future mobile integration).
+### Admin1 (manager/dispatcher level)
+Admin1 can register and manage police so it means not anyone can just be police, only authorized.
+
+Admin can hash password using `hashing.py` or the hashing page in admin website (`PasswordHashConverter.jsx`).
+
+Technical note:
+- The Admin Web hashing tool calls `POST /admin/password-hash/` and returns a Django-compatible hash.
 
 ---
 
-## 2) Core data model (what the system stores)
+## 2) Offline / 911 / SMS reporting (resilient even without internet)
 
-These tables define what CRASH can do:
+Users with no internet can send SMS report through 911.
+The thing is, if the mobile app detects it has no internet, the mobile app for users will go in offline mode where if they click the “SOS” it will ask to direct them to call 911 on their phone dialer or send a quick SMS on their phone messaging app to 911.
 
-### Reports (`tbl_reports`)
-- Key fields:
-  - `category`, `description`
-  - `latitude`, `longitude`
-  - `location_city`, `location_barangay` (reverse-geocoded “labels” stored for filtering/analytics)
-  - `reporter` (optional link to a user)
-  - `assigned_office` (police office that owns the incident)
-  - `status`, `remarks`
-  - `created_at`, `updated_at`
+The SMS message contains user info including the coordinates, name, contact, emergency contact, datetime, userId for tracking in our database/system, and other user personal details (stored in our data model; see `Backend/core/models.py`).
 
-### Status lifecycle
-CRASH uses a defined report lifecycle:
-- `Pending` → initial state (waiting to be handled)
-- `Acknowledged` → police has seen and accepted it
-- `En Route` → responders are moving
-- `On Scene` → responders arrived
-- `Resolved` → case closed
-- `Canceled` → false alarm / canceled
+### Offline report encoding (Admin Web)
+Admin can also insert an active “Pending” report or a resolved report through admin website.
+This is for offline feature of user mobile (stated above). Since 911 receives the offline report, users sent their necessary details to input in our system that can be use by admin.
 
-### Messages (`tbl_messages`)
-- Messages are stored per report and include:
-  - `sender_id`, `sender_type`, `receiver_id`
-  - `message_content`, `timestamp`
+The flow for our offline feature:
+1) user send their details to 911
+2) 911 receives the report with details
+3) 911 sends the report details including the status to admin
+4) then admin will insert the report to our system so even if its offline, it can still include in our analytics
 
-### Checkpoints (`tbl_checkpoints`)
-- Checkpoints include:
-  - `office` (owner station)
-  - `checkpoint_name`, `contact_number`
-  - `time_start`, `time_end` (schedule window)
-  - `latitude`, `longitude`, `location` (human-readable address line)
-  - `assigned_officers` (free-text list)
+Even offline reports counts!
 
-### Media (`tbl_media`)
-- Stores uploaded evidence metadata:
-  - `file_url` (stored in Supabase Storage)
-  - `file_type` (`image`/`video`)
-  - `report` link
-  - `sender_id`
+But with three conditions:
+1) user exists in system
+2) police that responded also exist in our system
+3) there’s necessary details like coordinates, time
 
-### Analytics cache (`tbl_summary_analytics`)
-- Stores precomputed counts by `(city, barangay, category)` for fast dashboard reporting.
+How the system supports this:
+- Admin Web provides a **Manual Report** page (`ManualReport.jsx`) that creates reports via `POST /admin/reports/manual/`.
+- Admin Web can display/search existing users and police offices so it is to insert a report (example: `GET /admin/users/search/` + `GET /admin/police-offices/`).
+- Reverse-geocoding auto-fills city/barangay from coordinates so offline entries are searchable and analytics-ready.
 
 ---
 
-## 3) Reporting workflows
+## 3) Online citizen reporting (GPS + evidence)
 
-CRASH supports two report creation paths.
+Users can send report with:
+- gps location (lat/lng)
+- description (optional)
+- media (optional)
+- category (emergency by default)
 
-### A) Mobile / citizen submission (backend-supported)
-Endpoint: `POST /mobile/reports/` (multipart)
-- Required inputs:
-  - `reporter` (must exist in `tbl_users`)
-  - `category`, `latitude`, `longitude`
-  - Optional `description`
-  - Optional `uploaded_files` (image/video)
+Backend support (for mobile/Postman testing):
+- `POST /mobile/reports/` accepts multipart form-data.
+- Media validation is enforced server-side:
+  - max **3 images**
+  - max **2 videos**
+  - max **15MB** per file
 
-System behavior:
-- Validates upload limits server-side (hardcoded in backend):
-  - max **3 images**, max **2 videos**, max **15MB** per file
-- Automatically reverse-geocodes coordinates into `location_city` + `location_barangay`.
-- Automatically assigns the nearest police office (Haversine distance) as `assigned_office` (fallback: first office in DB).
-
-Why this exists:
-- The system can ingest real-world “citizen GPS + media” evidence with consistent rules and deterministic office assignment.
-
-### B) Offline / 911 / SMS encoding (Admin Web manual insert)
-Admin Web page: **Manual Report** (`Frontend-Admin/src/pages/ManualReport.jsx`)
-
-Used when:
-- A report arrives via phone call / radio / SMS / offline logs and must be encoded into CRASH for tracking and analytics.
-
-Key rules (enforced in backend):
-- Endpoint: `POST /admin/reports/manual/`
-- `assigned_office` is **required** (dispatch decides ownership)
-- `status` allowed: `Pending` or `Resolved` (so already-resolved 911 entries can still appear in reporting)
-- `location_city`/`location_barangay` are auto-filled by reverse geocode.
-- `created_at`/`updated_at` can be provided for timeline accuracy.
-
-Why this exists:
-- Ensures offline incidents are not “lost” and can be audited/exported like digitally-submitted reports.
+Technical note (geospatial assignment):
+- The backend can assign the **nearest police office** based on distance using the **Haversine formula** (great-circle distance on Earth), so reports can be routed consistently.
 
 ---
 
-## 4) Police Web features (what police users can do)
+## 4) Admin Web features (visibility + control)
 
-Police Web is built in `Frontend-Police-JS/`.
+Admin can view all or specific [filters] existing police accounts and police checkpoints with their details in table and even in map.
 
-### Authentication and session
-- Login flow uses JWT access/refresh tokens.
-- Requests attach `Authorization: Bearer <token>`.
-- The frontend uses an API client layer with interceptors to centralize auth and error handling.
+### Police account management (table + filters)
+- Admin1 can create, update, and delete police office accounts.
+- Admin can view **All** or **Our** police accounts (scoped by which admin created the account).
 
-### Active reports (queue + details)
-Core capabilities:
-- List reports and open details per report.
-- Update status and remarks via backend patch endpoint.
-- View a report’s location, category, reporter metadata (when present), and evidence.
+### Map dashboard (map + right-click tools)
+- Admin dashboard loads police offices and checkpoints (and can filter what is shown).
+- Admin can just right click a spot in map to get the lat/lng and even address so it can copy paste quickly.
 
-### Report route + QR
-Endpoint: `GET /reports/{report_id}/route/`
-- Generates a Google Maps directions URL and a QR code for fast navigation/sharing.
-
-### Per-report chat
-Endpoints:
-- `GET /reports/{report_id}/messages/`
-- `POST /reports/{report_id}/messages/`
-
-Purpose:
-- Keeps communication contextual (messages are attached to a specific incident).
-
-### Checkpoints (operations and visibility)
-Endpoints:
-- CRUD: `/checkpoints/`
-- Active-only list: `/checkpoints/active/`
-
-Purpose:
-- Display active checkpoints on maps and allow offices to maintain their patrol/checkpoint schedule and staffing notes.
+Technical note:
+- Right-click reverse geocoding uses `GET /geocode/reverse/?lat=...&lng=...` and returns address components.
 
 ---
 
-## 5) Admin Web features (what admins can do)
+## 5) Police Web features (real-time response tools)
 
-Admin Web is built in `Frontend-Admin/`.
+Police can receive the reports in almost real-time, the system uses polling.
 
-### Admin dashboard map (offices + checkpoints + reports)
-Page: `Frontend-Admin/src/pages/Dashboard.jsx`
+Actual polling intervals (from `Frontend-Police-JS/src/constants/index.js`):
+- Dashboard + global notifier: **5 seconds**
+- Report chat: **3 seconds**
+- Live map: **15 seconds**
 
-Capabilities:
-- Loads map data from `GET /admin/map/data/` (combined payload for map rendering).
-- Filters “All” vs “Our” data:
-  - “Our” is based on which police offices were created by the current admin account.
-- Toggle visibility of office markers vs checkpoint markers.
+### Report details + evidence
+Police can view the report details including the media inputted by the reporter/citizen.
 
-Right-click reverse geocoding:
-- When an admin right-clicks any location on the map, Admin Web calls:
-  - `GET /geocode/reverse/?lat=...&lng=...`
-- The backend returns a readable `address_line`, `barangay`, `city`, and `full_address`.
+### Status workflow + remarks
+Police can set the status of the report and send a remarks for resolutions later.
 
-Why this exists:
-- Gives admins a fast “what’s where” operational view and a practical tool for identifying coordinates during encoding/audits.
+### Directions route + QR handoff
+Police can view the directions route from the office to the reporter via a google map embedded with indicated ETA and distance (`DirectionsModal.jsx`).
 
-### Police account management (CRUD for station accounts)
-Page: `Frontend-Admin/src/pages/PoliceAccountManagement.jsx`
+Police website also generates a QR code containing the route directions of the report so dispatching police can also have the same directions route by just scanning it in their devices.
 
-Endpoints:
-- `GET /admin/police-offices/?scope=all|our`
-- `POST /admin/police-offices/`
-- `PATCH /admin/police-offices/{office_id}/`
-- `DELETE /admin/police-offices/{office_id}/`
+Technical note:
+- The system provides a route link + QR code via `GET /reports/{report_id}/route/`.
+- The UI can also compute/visualize routes using Google Maps rendering; if needed, distance can fall back to Haversine.
 
-What it enables:
-- Admin can create new police offices (with email/password credentials).
-- Backend hashes credentials (police password stored as `password_hash`).
-- Office coordinates are reverse-geocoded and cached for UI display and filtering.
+### Two-way messaging during ongoing incidents
+Police and users can have conversation during active/on going reports — police and users can receive and send messages.
 
-### Manual report insertion (911/offline)
-Page: `Frontend-Admin/src/pages/ManualReport.jsx`
-- Includes helper tabs to search/select:
-  - a reporter user (`GET /admin/users/search/`)
-  - a police office (from police office list)
+### Map + checkpoints + right-click geocoding
+Police can add checkpoints with details including the location and schedule.
+The police website can also show what checkpoint is active or not based on comparison of the current time and schedule of checkpoint (including overnight schedules).
 
-### Password hashing tools (Admin1 → Admin2 workflow)
-CRASH supports two “safe hashing” paths for controlled account provisioning:
+Police can view all or specific checkpoints with their details in the map.
 
-1) Admin Web tool
-- Page: `Frontend-Admin/src/pages/PasswordHashConverter.jsx`
-- Endpoint: `POST /admin/password-hash/`
-- Output: a Django-compatible hashed password string
-
-2) Backend script tool (terminal)
-- Script: `Backend/hashing.py`
-- Uses Django’s `make_password()` to produce a valid hash for direct DB insertion.
-
-Why this exists:
-- Lets one admin generate hashes while another admin inserts accounts into Supabase/DB without ever storing plaintext passwords in the database.
+Police and admin can just right click a spot in map to get the lat/lng and even address so it can copy paste quickly.
 
 ---
 
-## 6) Analytics vs Resolved Cases (important distinction)
+## 6) Map-based insight (visual analytics)
 
-CRASH separates “Analytics” from “Resolved Cases” because they answer different questions.
+Police can view active or resolved report cases in a map.
+Reports have a specific color of pins to easily and visually identify what part/location has the most or what category tends to happen in the area.
 
-### Analytics = aggregated insights (dashboards)
-Backend endpoints:
-- `GET /analytics/summary/overview/`
-- `GET /analytics/hotspots/locations/`
-- `GET /analytics/hotspots/categories/`
-- `GET /analytics/export/` (PDF)
-
-What analytics is for:
-- Trend insight and decision support (counts, hotspots, category distribution, average resolution time).
-- Typically driven by **resolved** data, filtered by days/location/category and by scope.
-
-Performance support:
-- Backend includes an analytics cache table `tbl_summary_analytics` and a rebuild endpoint:
-  - `POST /analytics/update/`
-- This is intended to precompute aggregates so dashboards don’t rely on heavy queries.
-
-### Resolved Cases = an archive of individual case records
-Backend endpoints:
-- `GET /reports/resolved/` (JSON list)
-- `GET /reports/resolved/export/` (PDF list)
-- `GET /reports/{report_id}/export/` (single case file PDF)
-
-What resolved cases is for:
-- Audits, review, evidence lookup, and “case file” exports.
-- Shows each resolved report with timestamps, location, remarks, and computed resolution time.
+This is a **map-based analytics** because:
+- It gives fast situational awareness (“what’s happening where”) using color/category pins.
+- It does not require reading charts; commanders can spot hotspots visually.
 
 ---
 
-## 7) Exports (PDF)
+## 7) Analytics vs Resolved Cases (what’s the difference?)
 
-CRASH supports PDF exports for official documentation:
-- Analytics report PDF
-- Resolved cases list PDF
-- Single resolved case file PDF
+This is the key difference:
 
-Implementation details (backend):
-- PDF HTML templates live under: `Backend/core/pdf-templates/`
-- Backend renders HTML and converts to PDF (WeasyPrint).
-- Responses use `Content-Disposition: inline` so the browser can open the PDF in a new tab.
+### Analytics = summarized trends (numbers, rank, percentages)
+Police can view analyzation of our reports with filters like based on their time, office, categories, cities, barangays.
+Analysis highlights the numbers, rank, and percentage.
+Rank can be top categories or top locations depending on the setted filters.
+
+Police can export that filtered analysis to PDF.
+
+Technical note:
+- Analytics endpoints include:
+  - `GET /analytics/summary/overview/`
+  - `GET /analytics/hotspots/locations/`
+  - `GET /analytics/hotspots/categories/`
+  - `GET /analytics/export/` (PDF)
+
+### Resolved Cases = the archive (the list of cases)
+Police can also see all the resolved cases and export them.
+Police can select filters like days, office, categories, cities, and baranggay to filter all resolved cases.
+
+Resolved cases highlights the list of cases.
+
+Police can export these to PDF just to show the list of resolved cases.
+
+Technical note:
+- Resolved cases endpoints include:
+  - `GET /reports/resolved/` (list)
+  - `GET /reports/resolved/export/` (PDF list)
 
 ---
 
-## 8) Near-real-time behavior (polling)
+## 8) Case-file exports (single report PDF with media)
 
-CRASH achieves “live-ish” updates using polling (not WebSockets).
+Police can export a single report case to PDF that include report details even the image and QR code for video so they can just scan it.
 
-Police Web polling (see `Documentation/11 POLLING_INTERVALS.MD`):
-- Dashboard + global report notifier: every **5 seconds**
-- Report chat: every **3 seconds**
-- Live map refresh: every **15 seconds**
-
-Admin Web polling:
-- Admin dashboard map refresh: every **30 seconds** (`Frontend-Admin/src/pages/Dashboard.jsx`)
-
-Why polling exists:
-- Keeps UI simple while still delivering timely operational updates.
+Backend behavior (code-accurate):
+- `GET /reports/{report_id}/export/` generates a PDF case file.
+- Up to **3 images** are embedded into the PDF.
+- Up to **2 videos** are represented as **QR codes** (because a video cannot be printed, but the QR can open the file URL).
 
 ---
 
-## 9) Security and scoping (data visibility)
+## 9) Technical foundation (impressive but understandable)
 
 Authentication:
-- Backend issues JWT tokens with custom claims (`user_id`, `role`).
+- All protected endpoints use **Bearer Token (JWT)** via `Authorization: Bearer <access_token>`.
+- Tokens contain role information (admin vs police) so the backend can enforce scope and permissions.
 
-Scoping rules (high level):
-- Police users are generally restricted to data belonging to their `assigned_office`.
-- Admin users may view broader system data and manage police office accounts.
+Geocoding:
+- Reverse geocoding is implemented through Google Geocoding API and exposed through a simple endpoint for map right-click productivity.
 
-Why this exists:
-- Prevents accidental data leakage while keeping police screens relevant to their jurisdiction.
+PDF generation:
+- PDFs are generated server-side using HTML templates and rendered to PDF (WeasyPrint).
 
----
-
-## 10) Time and timezone correctness
-
-CRASH stores and returns timestamps using ISO-like formats.
-
-Manual insert note:
-- Admin Web uses `datetime-local` inputs (no timezone). For Manila-based operations, Admin Web encodes timestamps explicitly as `+08:00` to avoid accidental “timezone shifting” when encoding offline/911 events.
+Polling architecture:
+- CRASH uses polling (`setInterval`) instead of WebSockets for stability and simplicity.
+- Polling intervals are centralized so performance can be tuned without hunting through multiple files.
 
