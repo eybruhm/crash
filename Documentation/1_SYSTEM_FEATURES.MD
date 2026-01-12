@@ -19,30 +19,32 @@ CRASH is a multi-platform ecosystem designed for high-stakes public safety. It c
 CRASH uses a strictly hierarchical "Chain of Trust" to ensure that only authorized personnel can access sensitive crime data.
 
 * **Admin Level 2 (Highest Level / Senior IT)**
-    * Handles core system maintenance and has full repository access.
-    * Manages Admin Level 1 accounts directly via Supabase.
-    * Uses `hashing.py` to ensure nobody can become an administrator without direct authorization from the system owners.
+    * Handles core system maintenance and has full access to repository codes.
+    * Manages Admin Level 1 accounts directly via Supabase and the repository’s `hashing.py` script.
+    * This ensures that nobody can become an administrator without direct authorization from the system owners.
 
 * **Admin Level 1 (Junior IT / Dispatch Management)**
-    * Responsible for registering and maintaining Police Office accounts via the Admin Web Dashboard.
-    * Manages security control by adding, editing, or removing Police/Authority accounts.
-    * Ensures that only legitimate law enforcement officers can access the system.
+    * Responsible for registering, editing, and removing Police/Authority accounts for security control.
+    * Uses the Admin Web Portal to control which stations are active in the system.
+    * Ensures that only legitimate law enforcement officers can access the Police Web Portal.
 
 * **Police / Authority**
-    * Uses the Police Web Dashboard to receive, track, and manage all incoming reports system-wide.
+    * Uses the Police Web Portal to receive, track, manage, and respond to all incoming incidents.
     * Can view analytics, manage checkpoints, and communicate with citizens.
 
 * **Citizen / User**
-    * Uses the mobile application to report incidents, track case status, and utilize the emergency quick-trigger feature.
+    * Uses the mobile application or API to report incidents and track their safety status.
 
 ---
 
 ## 3. ADVANCED AUTHENTICATION AND TOOLS
 
-To maintain the integrity of credentials, CRASH supports specialized security paths:
-* **Secure Hashing Page**: Admins can use the `PasswordHashConverter.jsx` page within the portal to generate secure, Django-compatible password strings.
-* **Local Hashing Script**: `Backend/hashing.py` allows an Admin Level 2 to generate password hashes in a private terminal using Django’s `make_password()` function.
-* **Geospatial Tools**: Both Admins and Police can right-click any spot on the map to instantly capture the latitude, longitude, and physical address for quick copy-pasting into reports.
+To maintain the integrity of credentials, CRASH supports specialized password hashing paths:
+
+* **Django PBKDF2 Password Hashing**: The system utilizes Django’s `make_password()` function, which defaults to the **PBKDF2 algorithm with a SHA256 hash**.
+* **Secure Hashing Page**: Admins can use the `PasswordHashConverter.jsx` page within the portal to generate these secure hashed strings.
+* **Local Hashing Script**: For even higher security, `Backend/hashing.py` allows an Admin Level 2 to generate hashes in a private terminal, preventing plaintext passwords from ever touching the database.
+* **Geospatial Tools**: Both Admins and Police can right-click any spot on the map to instantly capture the latitude, longitude, and physical address for quick copy-pasting into reports or office logs.
 
 ---
 
@@ -50,20 +52,21 @@ To maintain the integrity of credentials, CRASH supports specialized security pa
 
 CRASH is designed to be resilient, acknowledging that internet connectivity is often lost during a crisis.
 
-### Online Reporting
-* Citizens send reports with precise GPS coordinates, optional descriptions, and media evidence (images/videos).
-* Reports are automatically routed to the nearest available police station using the Haversine distance formula.
-* The system enforces upload limits (e.g., max 3 images, 2 videos, 15MB per file).
+* **Online Reporting**
+    * Citizens send reports with precise GPS coordinates, optional descriptions, and media evidence.
+    * **Media Validation**: The backend enforces strict upload limits: maximum **3 images**, maximum **2 videos**, and a **15MB limit** per file.
+    * Reports are automatically routed to the nearest available police station using the **Haversine distance formula**.
 
-### Offline Reporting (911 / SMS Integration)
-* **Detection**: If the mobile app detects no internet, it enters "Offline Mode."
-* **SOS Trigger**: Users are prompted to call 911 or send a "Quick SMS" via their phone’s native messaging app.
-* **SMS Content**: The automated message contains the user’s name, contact info, emergency contacts, timestamp, User ID, and exact GPS coordinates.
+* **Offline Reporting (911 / SMS Integration)**
+    * If the mobile app detects no internet, it enters **Offline Mode**.
+    * The user is prompted to call 911 or send a "Quick SOS" via SMS.
+    * The automated SMS contains the user’s name, contact info, emergency contacts, timestamp, User ID, and exact GPS coordinates (`lat/lng`).
 
-### Offline-to-System Flow (The Bridge)
-* **Admin Role**: Since 911 receives the offline report, the Admin verifies the user’s identity in the system.
-* **Manual Insertion**: The Admin encodes the 911/SMS details into the system via `ManualReport.jsx`.
-* **Conditions for Entry**: For an offline report to count in analytics, the User and the responding Police must exist in the system, and valid coordinates/time must be provided.
+* **Offline-to-System Flow (The Bridge)**
+    * When 911/Dispatch receives an offline report, the Admin verifies the user’s identity in the system.
+    * The Admin then manually inserts the report via the **Manual Report** page (`ManualReport.jsx`).
+    * This ensures that even offline incidents are tracked and included in analytics.
+    * **Conditions for entry**: The User and responding Police must exist in the system, and valid coordinates/timestamps must be provided.
 
 ---
 
@@ -72,48 +75,50 @@ CRASH is designed to be resilient, acknowledging that internet connectivity is o
 The Police Web Portal is optimized for response time and incident management.
 
 * **Real-Time Incident Queue**
-    * Reports are received in near real-time via polling (every 5 seconds for reports, 3 seconds for chat).
-    * Police view full incident details, including high-resolution media evidence uploaded by citizens.
+    * Reports are received in near real-time via high-frequency polling.
+    * Dashboard updates every **5 seconds**, while the live map refreshes every **15 seconds**.
+    * Police can view full incident details, including media evidence uploaded by the reporter.
 
 * **Navigation and Dispatch**
-    * **Google Maps Integration**: The system embeds Google Maps showing the optimal route from the station to the reporter, including ETA and distance.
-    * **Routing QR Code**: The system generates a unique QR code for the route; responding officers scan this to open directions on their personal mobile devices.
+    * **Google Maps Integration**: The system embeds Google Maps showing the optimal route from the station to the reporter, including **Estimated Time of Arrival (ETA)** and **distance**.
+    * **Routing QR Code**: The system generates a unique QR code for the route. A responding officer can scan this to open directions on their personal device for hands-free navigation.
 
 * **Live Communication**
-    * A per-report chat system allows Police and Citizens to exchange messages while an incident is "Active" or "On Scene".
+    * A per-report chat system allows the Police and the Citizen to exchange messages.
+    * Message polling occurs every **3 seconds** to ensure rapid communication.
 
 * **Checkpoint Management**
-    * Police manage checkpoints including locations, contact numbers, and staffing notes.
-    * **Automatic Scheduling**: The system compares the current time with the checkpoint schedule to display "Active" vs. "Inactive" status automatically.
+    * Police can create and manage checkpoints, including locations, contact numbers, and specific schedules.
+    * The system automatically identifies **"Active" vs. "Inactive"** checkpoints by comparing current time to the scheduled window.
 
 ---
 
 ## 6. ANALYTICS VS. RESOLVED CASES
 
-CRASH provides two distinct ways to view historical data to serve different operational needs.
+CRASH provides two distinct ways to view historical data to serve different administrative needs.
 
-### Map-Based Visual Analysis
-* **Visual Clusters**: Police and Admins view active and resolved cases on a map.
-* **Color-Coded Pins**: Pin colors identify categories (e.g., Violence vs. Theft), allowing users to visually identify which locations have the highest crime density.
+* **Map-Based Visual Analytics**
+    * Police and Admins can view active and resolved cases on a map.
+    * Pins are **color-coded by category** (e.g., Violence, Theft) to visually identify crime clusters and hotspots.
 
-### Statistical Analytics (Decision Support)
-* **Focus**: High-level aggregated insights, trends, and percentages.
-* **Rankings**: Highlights "Top Categories" and "Top Locations" based on filters like time, office, city, and barangay.
-* **Export**: These filtered statistical dashboards can be exported to PDF for official reporting.
+* **Statistical Analytics (Decision Support)**
+    * **Metric Distinction**: Focuses on aggregated **numbers, ranks, and percentages**.
+    * **Rankings**: Highlights top categories or top locations (City/Barangay) based on user filters.
+    * Includes filters for specific dates, police offices, or crime categories.
+    * Supported by `tbl_summary_analytics` for high-speed dashboard reporting.
 
-### Resolved Cases (The Archive)
-* **Focus**: Individual record-keeping, auditing, and evidence lookup.
-* **Case Files**: Highlights the list of every closed case, including timestamps, police remarks, and computed resolution times.
-* **Single Export**: A single report can be exported to PDF, including the report details, images, and a QR code for video evidence.
+* **Resolved Cases (The Archive)**
+    * **Focus:** Individual record-keeping, auditing, and evidence lookup.
+    * **Case Files:** Highlights the list of every closed case, including timestamps, police remarks, and computed resolution times.
+    * **Single Export:** A single report can be exported to PDF, including the report details, images, and a QR code for video evidence.
+
 
 ---
 
-## 7. STATUS LIFECYCLE
+## 7. EXPORTS AND DOCUMENTATION
 
-Every incident in CRASH follows a strictly monitored lifecycle:
-* **Pending**: Report received and awaiting review.
-* **Acknowledged**: Police have reviewed and accepted the incident.
-* **En Route**: Officers are moving toward the reporter’s location.
-* **On Scene**: Officers have arrived at the incident location.
-* **Resolved**: The case is successfully closed.
-* **Canceled**: The report was withdrawn or identified as a false alarm.
+To support official record-keeping, CRASH allows the export of various data into professional PDF formats.
+
+* **Analytics Export**: Police can export filtered statistical dashboards to PDF to show numerical trends and rankings.
+* **Single Case File PDF**: Generates a document for a single incident, including timestamps, remarks, maps, images, and a **QR code for video evidence**.
+* **Resolved Case List PDF**: Generates a summary of all closed cases within a specific timeframe or jurisdiction for station-wide auditing.
