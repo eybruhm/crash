@@ -1,8 +1,7 @@
 # ============================================================================
-# URLS: Route mapping - connects HTTP requests to view handlers
-# Think of this as a "phone directory" - when someone calls a number (URL),
-# we tell Django which view handler (function) should answer that call.
-# Example: GET /api/reports/ => ReportViewSet.list() method
+# URLS: API route mapping - connects URL paths to view handlers
+# Used to define the REST endpoints (auth, admin tools, analytics, reports, etc.)
+# Registers ViewSets with routers and exposes explicit function/APIView routes
 # ============================================================================
 
 from django.urls import path, include

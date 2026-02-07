@@ -1,7 +1,8 @@
+#+#+#+#+############################################################
 # ============================================================================
-# VIEWS: Think of views as "request handlers" - they receive HTTP requests from
-# the frontend, process them using models/serializers, and send back responses.
-# Each view = one endpoint. Views are like "recipe executors" for API endpoints.
+# CORE VIEWS: Primary REST API endpoints and ViewSets
+# Used to handle authentication, admin operations, incident workflows, and media
+# Enforces role-based data scoping and maintains the analytics cache (non-analytics module)
 # ============================================================================
 
 from datetime import datetime, timedelta

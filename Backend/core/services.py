@@ -1,8 +1,7 @@
 # ============================================================================
-# SERVICES: Reusable helper functions used by views
-# Think of services as a "utility toolbox" - functions that many views need
-# Instead of duplicating code in each view, we write it once here and reuse it
-# Examples: PDF rendering, geocoding, filtering, time calculations
+# SERVICES: Shared business logic and utility helpers
+# Used by views/serializers for geocoding, filtering, PDF rendering, and uploads
+# Keeps reusable logic centralized to avoid duplication across endpoints
 # ============================================================================
 
 import requests, os, qrcode, base64

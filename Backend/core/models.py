@@ -1,11 +1,11 @@
+# ============================================================================
+# MODELS: Database schema mappings (Django ORM)
+# Used to define the CRASH data entities (admins, users, reports, media, etc.)
+# Each model maps to an existing tbl_* table and defines relationships/fields
+# ============================================================================
+
 from django.db import models
 import uuid
-
-# ============================================================================
-# MODELS: Think of each class as a TABLE in the database.
-# Each field = a COLUMN in that table. When you save an instance,
-# it creates a new ROW in the corresponding database table.
-# ============================================================================
 
 # ADMIN MODEL - Stores system administrator accounts
 # Who: Platform managers who oversee the whole system

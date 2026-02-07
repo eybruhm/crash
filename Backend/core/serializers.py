@@ -1,9 +1,7 @@
-# core/serializers.py
 # ============================================================================
-# SERIALIZERS: Think of each serializer as a "translator" between Python objects
-# and JSON (the format the frontend understands).
-# Serializers handle: converting data to JSON, validating input, transforming fields.
-# They sit between the view (Python) and the API (JSON).
+# SERIALIZERS: Request/response validation and transformation (DRF)
+# Used to validate incoming API payloads and shape outgoing JSON responses
+# Centralizes field rules, derived fields, and upload/media validation helpers
 # ============================================================================
 
 from rest_framework import serializers

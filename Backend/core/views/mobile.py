@@ -1,10 +1,7 @@
 # ============================================================================
-# MOBILE (CITIZEN) VIEWS
-# - These endpoints are used by the mobile app (citizens).
-# - For now, this provides a "create report with optional media" endpoint so you
-#   can test end-to-end using Postman, matching your Mobile Sitemap/Flow.
-#
-# NOTE: In Day 6.5 we will secure these endpoints using Supabase Auth tokens.
+# MOBILE VIEWS: Citizen report ingestion endpoints
+# Used by mobile clients to create reports and upload optional evidence media
+# Implements server-side validation, office assignment, and Supabase Storage upload
 # ============================================================================
 
 import os
@@ -22,30 +19,6 @@ from ..serializers import get_supabase_client
 
 
 class MobileCreateReportWithMediaAPIView(APIView):
-    """
-    ENDPOINT: POST /mobile/reports/
-
-        Used when:
-        - A citizen/mobile client submits a new incident report.
-        - Postman testing for end-to-end flow (report creation + optional evidence upload).
-
-    Purpose:
-        - Create a report row (tbl_reports) and optionally create media rows (tbl_media)
-            in ONE request.
-
-    Auth:
-    - Temporarily public for local Postman testing.
-    - In Day 6.5, we will require a valid Supabase Auth token.
-
-    Request (multipart/form-data):
-    - reporter: UUID (tbl_users.user_id)
-    - category: string (required; e.g., Emergency, Theft)
-    - latitude: decimal (required)
-    - longitude: decimal (required)
-    - description: string (optional)
-    - uploaded_file: file (optional) OR uploaded_files: multiple files (optional)
-    """
-
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
